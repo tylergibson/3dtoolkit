@@ -68,10 +68,6 @@ bool AppMain(BOOL stopping)
 	authInfo.clientId = webrtcConfig->authentication.client_id;
 	authInfo.clientSecret = webrtcConfig->authentication.client_secret;
 
-	rtc::EnsureWinsockInit();
-	rtc::Win32Thread w32_thread;
-	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
-
 	ServerMainWindow wnd(
 		webrtcConfig->server.c_str(),
 		webrtcConfig->port,
@@ -131,13 +127,17 @@ bool AppMain(BOOL stopping)
 	// Makes sure to release the frame buffer reference.
 	SAFE_RELEASE(frameBuffer);
 
+
+	rtc::EnsureWinsockInit();
+
 	rtc::InitializeSSL();
 
 	std::shared_ptr<ServerAuthenticationProvider> authProvider;
 	std::shared_ptr<TurnCredentialProvider> turnProvider;
-	PeerConnectionClient client;
-	rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(
-		&client, &wnd, webrtcConfig.get(), g_bufferRenderer));
+
+	std::vector<std::thread*> threads;
+	std::vector<std::shared_ptr<PeerConnectionClient>> clients;
+	std::vector<rtc::scoped_refptr<Conductor>> conductors;
 
 	// Handles input from client.
 	InputDataHandler inputHandler([&](const std::string& message)
@@ -169,7 +169,7 @@ bool AppMain(BOOL stopping)
 
 				// Resizes the swap chain.
 				g_deviceResources->SetStereo(isStereo);
-				
+
 				// Updates the new frame buffer.
 				if (!serverConfig->server_config.system_service)
 				{
@@ -253,106 +253,198 @@ bool AppMain(BOOL stopping)
 		}
 	});
 
+	for (auto i = 0; i < 4; ++i)
+	{
+		threads.push_back(new std::thread([&, i]()
+		{
+			rtc::Win32Thread instanceThread;
+
+			rtc::ThreadManager::Instance()->SetCurrentThread(&instanceThread);
+
+			auto client = std::make_shared<PeerConnectionClient>(std::to_string(i));
+			auto conductor = new rtc::RefCountedObject<Conductor>(
+				client.get(), &wnd, webrtcConfig.get(), g_bufferRenderer);
+
+			conductor->SetInputDataHandler(&inputHandler);
+			client->SetHeartbeatMs(webrtcConfig->heartbeat);
+
+			clients.push_back(client);
+			conductors.push_back(conductor);
+
+			// Main loop.
+			MSG msg;
+			BOOL gm;
+			while (!stopping && (gm = ::GetMessage(&msg, (HWND)-1, 0, 0)) != 0 && gm != -1)
+			{
+				// For system service, ignore window and swap chain.
+				if (serverConfig->server_config.system_service)
+				{
+					::TranslateMessage(&msg);
+					::DispatchMessage(&msg);
+				}
+				else
+				{
+					if (!wnd.PreTranslateMessage(&msg))
+					{
+						::TranslateMessage(&msg);
+						::DispatchMessage(&msg);
+					}
+				}
+			}
+		}));
+	}
+
+	/*auto thread = std::make_shared<rtc::Win32Thread>();
+
+	rtc::ThreadManager::Instance()->SetCurrentThread(thread.get());
+
+	auto client = std::make_shared<PeerConnectionClient>(std::to_string(i));
+	auto conductor = new rtc::RefCountedObject<Conductor>(
+		client.get(), &wnd, webrtcConfig.get(), g_bufferRenderer);
+
 	conductor->SetInputDataHandler(&inputHandler);
-	client.SetHeartbeatMs(webrtcConfig->heartbeat);
 
-	// configure callbacks (which may or may not be used)
-	AuthenticationProvider::AuthenticationCompleteCallback authComplete([&](const AuthenticationProviderResult& data)
+	threads.push_back(thread);
+	clients.push_back(client);
+	conductors.push_back(conductor);*/
+
+	//std::for_each(clients.cbegin(), clients.cend(), [&](std::shared_ptr<PeerConnectionClient> c) { c->SetHeartbeatMs(webrtcConfig->heartbeat); });
+
+	//// configure callbacks (which may or may not be used)
+	//AuthenticationProvider::AuthenticationCompleteCallback authComplete([&](const AuthenticationProviderResult& data)
+	//{
+	//	if (data.successFlag)
+	//	{
+	//		client.SetAuthorizationHeader("Bearer " + data.accessToken);
+
+	//		// indicate to the user auth is complete (only if turn isn't in play)
+	//		if (turnProvider.get() == nullptr)
+	//		{
+	//			wnd.SetAuthCode(L"OK");
+	//		}
+
+	//		// For system service, automatically connect to the signaling server
+	//		// after successful authentication.
+	//		if (serverConfig->server_config.system_service)
+	//		{
+	//			conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
+	//		}
+	//	}
+	//});
+
+	//TurnCredentialProvider::CredentialsRetrievedCallback credentialsRetrieved([&](const TurnCredentials& creds)
+	//{
+	//	if (creds.successFlag)
+	//	{
+	//		conductor->SetTurnCredentials(creds.username, creds.password);
+
+	//		// indicate to the user turn is done
+	//		wnd.SetAuthCode(L"OK");
+	//	}
+	//});
+
+	//// configure auth, if needed
+	//if (!authInfo.authority.empty())
+	//{
+	//	authProvider.reset(new ServerAuthenticationProvider(authInfo));
+
+	//	authProvider->SignalAuthenticationComplete.connect(&authComplete, &AuthenticationProvider::AuthenticationCompleteCallback::Handle);
+	//}
+	//else if (serverConfig->server_config.system_service)
+	//{
+	//	// For system service, automatically connect to the signaling server.
+	//	conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
+	//}
+
+	//// configure turn, if needed
+	//if (!webrtcConfig->turn_server.provider.empty())
+	//{
+	//	turnProvider.reset(new TurnCredentialProvider(webrtcConfig->turn_server.provider));
+	//	turnProvider->SignalCredentialsRetrieved.connect(
+	//		&credentialsRetrieved,
+	//		&TurnCredentialProvider::CredentialsRetrievedCallback::Handle);
+	//}
+
+	//// start auth or turn if needed
+	//if (turnProvider.get() != nullptr)
+	//{
+	//	if (authProvider.get() != nullptr)
+	//	{
+	//		turnProvider->SetAuthenticationProvider(authProvider.get());
+	//	}
+
+	//	// under the hood, this will trigger authProvider->Authenticate() if it exists
+	//	turnProvider->RequestCredentials();
+	//}
+	//else if (authProvider.get() != nullptr)
+	//{
+	//	authProvider->Authenticate();
+	//}
+
+	//// let the user know what we're doing
+	//if (turnProvider.get() != nullptr || authProvider.get() != nullptr)
+	//{
+	//	if (authProvider.get() != nullptr)
+	//	{
+	//		wnd.SetAuthUri(std::wstring(authInfo.authority.begin(), authInfo.authority.end()));
+	//	}
+
+	//	wnd.SetAuthCode(L"Loading");
+	//}
+	//else
+	//{
+	//	wnd.SetAuthCode(L"Not configured");
+	//	wnd.SetAuthUri(L"Not configured");
+	//}
+
+	//// For system service, automatically connect to the signaling server.
+	//if (serverConfig->server_config.system_service)
+	//{
+	//	conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
+	//}
+
+	/*while (!stopping)
 	{
-		if (data.successFlag)
+		auto mainThread = rtc::Thread::Current();
+
+		for each (auto th in threads)
 		{
-			client.SetAuthorizationHeader("Bearer " + data.accessToken);
-
-			// indicate to the user auth is complete (only if turn isn't in play)
-			if (turnProvider.get() == nullptr)
-			{
-				wnd.SetAuthCode(L"OK");
-			}
-
-			// For system service, automatically connect to the signaling server
-			// after successful authentication.
-			if (serverConfig->server_config.system_service)
-			{
-				conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
-			}
+			rtc::ThreadManager::Instance()->SetCurrentThread(th.get());
+			th->ProcessMessages(500);
 		}
-	});
+	}*/
 
-	TurnCredentialProvider::CredentialsRetrievedCallback credentialsRetrieved([&](const TurnCredentials& creds)
-	{
-		if (creds.successFlag)
-		{
-			conductor->SetTurnCredentials(creds.username, creds.password);
+	//// Main loop.
+	//MSG msg;
+	//BOOL gm;
+	//while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
+	//{
+	//	// For system service, ignore window and swap chain.
+	//	if (serverConfig->server_config.system_service)
+	//	{
+	//		::TranslateMessage(&msg);
+	//		::DispatchMessage(&msg);
+	//	}
+	//	else
+	//	{
+	//		if (!wnd.PreTranslateMessage(&msg))
+	//		{
+	//			::TranslateMessage(&msg);
+	//			::DispatchMessage(&msg);
+	//		}
 
-			// indicate to the user turn is done
-			wnd.SetAuthCode(L"OK");
-		}
-	});
-
-	// configure auth, if needed
-	if (!authInfo.authority.empty())
-	{
-		authProvider.reset(new ServerAuthenticationProvider(authInfo));
-
-		authProvider->SignalAuthenticationComplete.connect(&authComplete, &AuthenticationProvider::AuthenticationCompleteCallback::Handle);
-	}
-	else if (serverConfig->server_config.system_service)
-	{
-		// For system service, automatically connect to the signaling server.
-		conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
-	}
-
-	// configure turn, if needed
-	if (!webrtcConfig->turn_server.provider.empty())
-	{
-		turnProvider.reset(new TurnCredentialProvider(webrtcConfig->turn_server.provider));
-		turnProvider->SignalCredentialsRetrieved.connect(
-			&credentialsRetrieved,
-			&TurnCredentialProvider::CredentialsRetrievedCallback::Handle);
-	}
-
-	// start auth or turn if needed
-	if (turnProvider.get() != nullptr)
-	{
-		if (authProvider.get() != nullptr)
-		{
-			turnProvider->SetAuthenticationProvider(authProvider.get());
-		}
-
-		// under the hood, this will trigger authProvider->Authenticate() if it exists
-		turnProvider->RequestCredentials();
-	}
-	else if (authProvider.get() != nullptr)
-	{
-		authProvider->Authenticate();
-	}
-
-	// let the user know what we're doing
-	if (turnProvider.get() != nullptr || authProvider.get() != nullptr)
-	{
-		if (authProvider.get() != nullptr)
-		{
-			wnd.SetAuthUri(std::wstring(authInfo.authority.begin(), authInfo.authority.end()));
-		}
-
-		wnd.SetAuthCode(L"Loading");
-	}
-	else
-	{
-		wnd.SetAuthCode(L"Not configured");
-		wnd.SetAuthUri(L"Not configured");
-	}
-
-	// For system service, automatically connect to the signaling server.
-	if (serverConfig->server_config.system_service)
-	{
-		conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
-	}
+	//		if (std::any_of(conductors.cbegin(), conductors.cend(), [](rtc::scoped_refptr<Conductor> c) { return c->connection_active(); }) ||
+	//			std::any_of(clients.cbegin(), clients.cend(), [&](std::shared_ptr<PeerConnectionClient> c) { return c->is_connected(); }))
+	//		{
+	//			g_deviceResources->Present();
+	//		}
+	//	}
+	//}
 
 	// Main loop.
 	MSG msg;
 	BOOL gm;
-	while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
+	while (!stopping && (gm = ::GetMessage(&msg, wnd.handle(), 0, 0)) != 0 && gm != -1)
 	{
 		// For system service, ignore window and swap chain.
 		if (serverConfig->server_config.system_service)
@@ -365,15 +457,21 @@ bool AppMain(BOOL stopping)
 			if (!wnd.PreTranslateMessage(&msg))
 			{
 				::TranslateMessage(&msg);
-				::DispatchMessage(&msg);
-			}
 
-			if (conductor->connection_active() || client.is_connected())
-			{
-				g_deviceResources->Present();
+				// TODO(bengreenier): the error here occurs bc
+				// we can't dispatch messages to the conductors from this thread
+				// we need a layer (perhaps a lightweight MainWindowCallbackImpl)
+				// that marshalls from this thread to the thread the conductor was ctored on
+				::DispatchMessage(&msg);
 			}
 		}
 	}
+
+	std::for_each(threads.begin(), threads.end(), [](std::thread* th)
+	{
+		th->join();
+		delete th;
+	});
 
 	rtc::CleanupSSL();
 
