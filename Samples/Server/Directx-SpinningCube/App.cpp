@@ -17,6 +17,7 @@
 #include "server_renderer.h"
 #include "webrtc.h"
 #include "config_parser.h"
+#include "directx_buffer_capturer.h"
 #include "service/render_service.h"
 #endif // TEST_RUNNER
 
@@ -136,8 +137,11 @@ bool AppMain(BOOL stopping)
 	std::shared_ptr<ServerAuthenticationProvider> authProvider;
 	std::shared_ptr<TurnCredentialProvider> turnProvider;
 	PeerConnectionClient client;
+	std::unique_ptr<BufferCapturer> bufferCapturer(
+		new DirectXBufferCapturer(g_deviceResources->GetD3DDevice()));
+
 	rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(
-		&client, &wnd, webrtcConfig.get(), g_bufferRenderer));
+		&client, bufferCapturer.get(), &wnd, webrtcConfig.get()));
 
 	// Handles input from client.
 	InputDataHandler inputHandler([&](const std::string& message)
@@ -370,7 +374,12 @@ bool AppMain(BOOL stopping)
 
 			if (conductor->connection_active() || client.is_connected())
 			{
+				g_cubeRenderer->Update();
+				g_cubeRenderer->Render();
 				g_deviceResources->Present();
+
+				// Phong Cao: TODO
+				((DirectXBufferCapturer*)bufferCapturer.get())->SendFrame(nullptr);
 			}
 		}
 	}
