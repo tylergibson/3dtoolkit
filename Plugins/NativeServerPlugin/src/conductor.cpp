@@ -80,9 +80,11 @@ Conductor::Conductor(
 		input_data_handler_(nullptr)
 {
 	client_->RegisterObserver(this);
+
 	if (main_window_->IsWindow())
 	{
-		main_window->RegisterObserver(this);
+		thread_callback_ = new ThreadSafeMainWindowCallback(this);
+		main_window->RegisterObserver(thread_callback_);
 	}
 
 	if (connection_observer != nullptr)
@@ -104,6 +106,9 @@ Conductor::~Conductor()
 
 	// cleanup the observer
 	delete client_observer_;
+
+	// cleanup the thread callback
+	delete thread_callback_;
 }
 
 bool Conductor::connection_active() const
