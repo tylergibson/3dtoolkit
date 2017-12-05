@@ -43,9 +43,6 @@
     <ClCompile Include="src\input_data_channel_observer.cpp">
       <Filter>Source\StreamingToolkit</Filter>
     </ClCompile>
-    <ClCompile Include="src\buffer_renderer.cpp">
-      <Filter>Source\StreamingToolkit</Filter>
-    </ClCompile>
     <ClCompile Include="src\render_service.cpp">
       <Filter>Source\service</Filter>
     </ClCompile>
@@ -89,9 +86,6 @@
       <Filter>Headers\service</Filter>
     </ClInclude>
     <ClInclude Include="inc\buffer_capturer.h">
-      <Filter>Headers\StreamingToolkit</Filter>
-    </ClInclude>
-    <ClInclude Include="inc\buffer_renderer.h">
       <Filter>Headers\StreamingToolkit</Filter>
     </ClInclude>
     <ClInclude Include="inc\directx_buffer_capturer.h">

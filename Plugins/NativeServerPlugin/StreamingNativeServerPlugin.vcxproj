@@ -187,13 +187,11 @@
     <ClCompile Include="src\defaults.cpp" />
     <ClCompile Include="src\directx_buffer_capturer.cpp" />
     <ClCompile Include="src\input_data_channel_observer.cpp" />
-    <ClCompile Include="src\buffer_renderer.cpp" />
     <ClCompile Include="src\render_service.cpp" />
     <ClCompile Include="src\service_base.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="inc\buffer_capturer.h" />
-    <ClInclude Include="inc\buffer_renderer.h" />
     <ClInclude Include="inc\conductor.h" />
     <ClInclude Include="inc\defaults.h" />
     <ClInclude Include="inc\directx_buffer_capturer.h" />

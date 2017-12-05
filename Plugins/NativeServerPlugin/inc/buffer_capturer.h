@@ -72,7 +72,7 @@ namespace StreamingToolkit
 
 	protected:
 		virtual void Initialize() = 0;
-		virtual void SendFrame(webrtc::VideoFrame frame) = 0;
+		virtual void SendFrame(webrtc::VideoFrame video_frame) = 0;
 
 		Clock* const clock_;
 		bool use_software_encoder_;

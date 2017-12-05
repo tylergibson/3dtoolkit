@@ -13,8 +13,8 @@ namespace StreamingToolkit
 		use_software_encoder_(false),
 		sink_wants_observer_(nullptr)
 	{
-		SetCaptureFormat(NULL);
 		set_enable_video_adapter(false);
+		SetCaptureFormat(NULL);
 	}
 
 	cricket::CaptureState BufferCapturer::Start(const cricket::VideoFormat& format)

@@ -52,8 +52,6 @@ DeviceResources*	g_deviceResources = nullptr;
 CubeRenderer*		g_cubeRenderer = nullptr;
 #ifdef TEST_RUNNER
 VideoTestRunner*	g_videoTestRunner = nullptr;
-#else // TEST_RUNNER
-BufferRenderer*		g_bufferRenderer = nullptr;
 #endif // TESTRUNNER
 
 #ifndef TEST_RUNNER
@@ -95,53 +93,32 @@ bool AppMain(BOOL stopping)
 	// Initializes the cube renderer.
 	g_cubeRenderer = new CubeRenderer(g_deviceResources);
 
-	// Render loop.
-	std::function<void()> frameRenderFunc = ([&]
-	{
-		g_cubeRenderer->Update();
-
-		// For system service, we render to buffer instead of swap chain.
-		if (serverConfig->server_config.system_service)
-		{
-			g_cubeRenderer->Render(g_bufferRenderer->GetRenderTargetView());
-		}
-		else
-		{
-			g_cubeRenderer->Render();
-		}
-	});
-
-	ID3D11Texture2D* frameBuffer = nullptr;
-	if (!serverConfig->server_config.system_service)
-	{
-		// Gets the frame buffer from the swap chain.
-		HRESULT hr = g_deviceResources->GetSwapChain()->GetBuffer(
-			0,
-			__uuidof(ID3D11Texture2D),
-			reinterpret_cast<void**>(&frameBuffer));
-	}
-
-	// Initializes the buffer renderer.
-	g_bufferRenderer = new BufferRenderer(
-		serverConfig->server_config.width,
-		serverConfig->server_config.height,
-		g_deviceResources->GetD3DDevice(),
-		frameRenderFunc,
-		frameBuffer);
-
-	// Makes sure to release the frame buffer reference.
-	SAFE_RELEASE(frameBuffer);
-
 	rtc::InitializeSSL();
 
 	std::shared_ptr<ServerAuthenticationProvider> authProvider;
 	std::shared_ptr<TurnCredentialProvider> turnProvider;
 	PeerConnectionClient client;
-	std::unique_ptr<BufferCapturer> bufferCapturer(
-		new DirectXBufferCapturer(g_deviceResources->GetD3DDevice()));
 
+	// Gets the frame buffer from the swap chain.
+	ComPtr<ID3D11Texture2D> frameBuffer;
+	if (!serverConfig->server_config.system_service)
+	{
+		HRESULT hr = g_deviceResources->GetSwapChain()->GetBuffer(
+			0,
+			__uuidof(ID3D11Texture2D),
+			reinterpret_cast<void**>(frameBuffer.GetAddressOf()));
+	}
+
+	// Creates and initializes the buffer capturer.
+	// Note: Conductor is responsible for cleaning up bufferCapturer object.
+	DirectXBufferCapturer* bufferCapturer = new DirectXBufferCapturer(
+		g_deviceResources->GetD3DDevice());
+
+	bufferCapturer->Initialize();
+
+	// Initializes the conductor.
 	rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(
-		&client, bufferCapturer.get(), &wnd, webrtcConfig.get()));
+		&client, bufferCapturer, &wnd, webrtcConfig.get()));
 
 	// Handles input from client.
 	InputDataHandler inputHandler([&](const std::string& message)
@@ -161,39 +138,7 @@ bool AppMain(BOOL stopping)
 
 			if (strcmp(type, "stereo-rendering") == 0)
 			{
-				getline(datastream, token, ',');
-				bool isStereo = stoi(token) == 1;
-				if (isStereo == g_deviceResources->IsStereo())
-				{
-					return;
-				}
-
-				// Releases the current frame buffer.
-				g_bufferRenderer->Release();
-
-				// Resizes the swap chain.
-				g_deviceResources->SetStereo(isStereo);
-				
-				// Updates the new frame buffer.
-				if (!serverConfig->server_config.system_service)
-				{
-					ID3D11Texture2D* frameBuffer = nullptr;
-					HRESULT hr = g_deviceResources->GetSwapChain()->GetBuffer(
-						0,
-						__uuidof(ID3D11Texture2D),
-						reinterpret_cast<void**>(&frameBuffer));
-
-					g_bufferRenderer->Resize(frameBuffer);
-
-					// Makes sure to release the frame buffer reference.
-					SAFE_RELEASE(frameBuffer);
-				}
-				else
-				{
-					SIZE size = g_deviceResources->GetOutputSize();
-					g_bufferRenderer->Resize(size.cx, size.cy);
-				}
-
+				// Phong Cao: TODO
 			}
 			else if (strcmp(type, "camera-transform-lookat") == 0)
 			{
@@ -353,33 +298,56 @@ bool AppMain(BOOL stopping)
 		conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
 	}
 
+	// Phong Cao: TODO - Parses from config file.
+	int targetFps = 60;
+	int interval = 1000 / targetFps;
+
 	// Main loop.
-	MSG msg;
-	BOOL gm;
-	while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
+	while (!stopping)
 	{
+		MSG msg = { 0 };
+
 		// For system service, ignore window and swap chain.
 		if (serverConfig->server_config.system_service)
 		{
-			::TranslateMessage(&msg);
-			::DispatchMessage(&msg);
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
 		}
 		else
 		{
-			if (!wnd.PreTranslateMessage(&msg))
+			if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 			{
-				::TranslateMessage(&msg);
-				::DispatchMessage(&msg);
+				if (!wnd.PreTranslateMessage(&msg))
+				{
+					TranslateMessage(&msg);
+					DispatchMessage(&msg);
+				}
 			}
-
-			if (conductor->connection_active() || client.is_connected())
+			else
 			{
-				g_cubeRenderer->Update();
-				g_cubeRenderer->Render();
-				g_deviceResources->Present();
+				if (conductor->is_closing())
+				{
+					break;
+				}
 
-				// Phong Cao: TODO
-				((DirectXBufferCapturer*)bufferCapturer.get())->SendFrame(nullptr);
+				if (conductor->connection_active() || client.is_connected())
+				{
+					ULONGLONG tick = GetTickCount64();
+					g_cubeRenderer->Update();
+					g_cubeRenderer->Render();
+					bufferCapturer->SendFrame(frameBuffer.Get());
+					g_deviceResources->Present();
+
+					// FPS limiter.
+					ULONGLONG timeElapsed = GetTickCount64() - tick;
+					DWORD sleepAmount = 0;
+					if (timeElapsed < interval)
+					{
+						sleepAmount = interval - timeElapsed;
+					}
+
+					Sleep(sleepAmount);
+				}
 			}
 		}
 	}
@@ -387,7 +355,6 @@ bool AppMain(BOOL stopping)
 	rtc::CleanupSSL();
 
 	// Cleanup.
-	delete g_bufferRenderer;
 	delete g_cubeRenderer;
 	delete g_deviceResources;
 

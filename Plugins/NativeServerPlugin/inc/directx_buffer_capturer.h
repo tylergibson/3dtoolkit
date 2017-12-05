@@ -12,6 +12,7 @@
 
 #include <d3d11_4.h>
 #include <wrl\client.h>
+#include <wrl\wrappers\corewrappers.h>
 
 #include "buffer_capturer.h"
 
@@ -27,11 +28,16 @@ namespace StreamingToolkit
 
 		void Initialize() override;
 
-		void SendFrame(webrtc::VideoFrame frame) override;
+		void SendFrame(webrtc::VideoFrame video_frame) override;
 
-		void SendFrame(ID3D11Texture2D* texture);
+		void SendFrame(ID3D11Texture2D* frame_buffer);
 
 	private:
+		void UpdateStagingBuffer(ID3D11Texture2D* frame_buffer);
+
 		Microsoft::WRL::ComPtr<ID3D11Device> d3d_device_;
+		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3d_context_;
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_frame_buffer_;
+		D3D11_TEXTURE2D_DESC staging_frame_buffer_desc_;
 	};
 }

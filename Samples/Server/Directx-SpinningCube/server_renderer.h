@@ -6,5 +6,4 @@
 #pragma warning(disable : 4244)
 
 #include "buffer_capturer.h"
-#include "buffer_renderer.h"
 

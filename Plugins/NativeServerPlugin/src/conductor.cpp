@@ -79,6 +79,7 @@ Conductor::Conductor(
 	PeerConnectionObserver* connection_observer) :
 		peer_id_(-1),
 		loopback_(false),
+		is_closing_(false),
 		client_(client),
 		buffer_capturer_(buffer_capturer),
 		main_window_(main_window),
@@ -117,6 +118,11 @@ bool Conductor::connection_active() const
 	return peer_connection_.get() != NULL;
 }
 
+bool Conductor::is_closing() const
+{
+	return is_closing_;
+}
+
 void Conductor::SetTurnCredentials(const std::string& username, const std::string& password)
 {
 	turn_username_ = username;
@@ -130,6 +136,7 @@ void Conductor::SetInputDataHandler(InputDataHandler* handler)
 
 void Conductor::Close() 
 {
+	is_closing_ = true;
 	client_->SignOut();
 	client_->Shutdown();
 
