@@ -116,6 +116,10 @@ bool AppMain(BOOL stopping)
 		g_deviceResources->GetD3DDevice());
 
 	bufferCapturer->Initialize();
+	if (nvEncConfig->use_software_encoding)
+	{
+		bufferCapturer->EnableSoftwareEncoder();
+	}
 
 	// Initializes the conductor.
 	rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(

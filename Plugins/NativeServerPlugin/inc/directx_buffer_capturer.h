@@ -28,8 +28,6 @@ namespace StreamingToolkit
 
 		void Initialize() override;
 
-		void SendFrame(webrtc::VideoFrame video_frame) override;
-
 		void SendFrame(ID3D11Texture2D* frame_buffer);
 
 	private:

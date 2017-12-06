@@ -31,23 +31,6 @@ void DirectXBufferCapturer::Initialize()
 	webrtc::H264EncoderImpl::SetContext(d3d_context_.Get());
 }
 
-void DirectXBufferCapturer::SendFrame(webrtc::VideoFrame video_frame)
-{
-	if (!running_)
-	{
-		return;
-	}
-
-	if (sink_)
-	{
-		sink_->OnFrame(video_frame);
-	}
-	else
-	{
-		OnFrame(video_frame, video_frame.width(), video_frame.height());
-	}
-}
-
 void DirectXBufferCapturer::SendFrame(ID3D11Texture2D* frame_buffer)
 {
 	if (!running_)
@@ -55,21 +38,56 @@ void DirectXBufferCapturer::SendFrame(ID3D11Texture2D* frame_buffer)
 		return;
 	}
 
-	D3D11_TEXTURE2D_DESC desc;
-	frame_buffer->GetDesc(&desc);
+	// Updates staging frame buffer.
 	UpdateStagingBuffer(frame_buffer);
 
-	rtc::scoped_refptr<webrtc::I420Buffer> buffer;
-	buffer = webrtc::I420Buffer::Create(desc.Width, desc.Height);
-	auto time_stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	// Creates webrtc frame buffer.
+	D3D11_TEXTURE2D_DESC desc;
+	frame_buffer->GetDesc(&desc);
+	rtc::scoped_refptr<webrtc::I420Buffer> buffer = 
+		webrtc::I420Buffer::Create(desc.Width, desc.Height);
+
+	// For software encoder, converting to supported video format.
+	if (use_software_encoder_)
+	{
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		if (SUCCEEDED(d3d_context_.Get()->Map(
+			staging_frame_buffer_.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+		{
+			libyuv::ABGRToI420(
+				(uint8_t*)mapped.pData,
+				desc.Width * 4,
+				buffer.get()->MutableDataY(),
+				buffer.get()->StrideY(),
+				buffer.get()->MutableDataU(),
+				buffer.get()->StrideU(),
+				buffer.get()->MutableDataV(),
+				buffer.get()->StrideV(),
+				desc.Width,
+				desc.Height);
+
+			d3d_context_->Unmap(staging_frame_buffer_.Get(), 0);
+		}
+	}
+
+	// Updates time stamp.
+	auto timeStamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()).count();
 
-	auto frame = webrtc::VideoFrame(buffer, kVideoRotation_0, 0);
-	staging_frame_buffer_.Get()->AddRef();
-	frame.SetID3D11Texture2D(staging_frame_buffer_.Get());
+	// Creates video frame buffer.
+	auto frame = webrtc::VideoFrame(buffer, kVideoRotation_0, timeStamp);
 	frame.set_ntp_time_ms(clock_->CurrentNtpInMilliseconds());
 	frame.set_rotation(VideoRotation::kVideoRotation_0);
-	SendFrame(frame);
+
+	// For hardware encoder, setting the video frame texture.
+	if (!use_software_encoder_)
+	{
+		frame.SetID3D11Texture2D(staging_frame_buffer_.Get());
+		staging_frame_buffer_.Get()->AddRef();
+	}
+
+	// Sending video frame.
+	BufferCapturer::SendFrame(frame);
 }
 
 void DirectXBufferCapturer::UpdateStagingBuffer(ID3D11Texture2D* frame_buffer)
@@ -87,7 +105,8 @@ void DirectXBufferCapturer::UpdateStagingBuffer(ID3D11Texture2D* frame_buffer)
 		staging_frame_buffer_desc_.Height = desc.Height;
 		staging_frame_buffer_desc_.MipLevels = 1;
 		staging_frame_buffer_desc_.SampleDesc.Count = 1;
-		staging_frame_buffer_desc_.Usage = D3D11_USAGE_DEFAULT;
+		staging_frame_buffer_desc_.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		staging_frame_buffer_desc_.Usage = D3D11_USAGE_STAGING;
 		d3d_device_->CreateTexture2D(
 			&staging_frame_buffer_desc_, nullptr, &staging_frame_buffer_);
 	}

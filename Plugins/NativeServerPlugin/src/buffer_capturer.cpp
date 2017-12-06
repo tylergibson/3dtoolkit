@@ -20,10 +20,6 @@ namespace StreamingToolkit
 	cricket::CaptureState BufferCapturer::Start(const cricket::VideoFormat& format)
 	{
 		SetCaptureFormat(&format);
-
-		// Phong Cao: TODO - Creates nvEncConfig which parses json file.
-		use_software_encoder_ = false;
-
 		running_ = true;
 		SetCaptureState(cricket::CS_RUNNING);
 		return cricket::CS_RUNNING;
@@ -74,5 +70,27 @@ namespace StreamingToolkit
 	{
 		rtc::CritScope cs(&lock_);
 		sink_ = nullptr;
+	}
+
+	void BufferCapturer::EnableSoftwareEncoder(bool use_software_encoder)
+	{
+		use_software_encoder_ = use_software_encoder;
+	}
+
+	void BufferCapturer::SendFrame(webrtc::VideoFrame video_frame)
+	{
+		if (!running_)
+		{
+			return;
+		}
+
+		if (sink_)
+		{
+			sink_->OnFrame(video_frame);
+		}
+		else
+		{
+			OnFrame(video_frame, video_frame.width(), video_frame.height());
+		}
 	}
 };
