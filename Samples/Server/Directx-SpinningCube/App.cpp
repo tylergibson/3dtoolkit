@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <shellapi.h>
 #include <fstream>
+#include <atomic>
 
 #include "DeviceResources.h"
 #include "CubeRenderer.h"
@@ -17,6 +18,7 @@
 #include "server_renderer.h"
 #include "webrtc.h"
 #include "config_parser.h"
+#include "directx_buffer_capturer.h"
 #include "service/render_service.h"
 #endif // TEST_RUNNER
 
@@ -51,11 +53,154 @@ DeviceResources*	g_deviceResources = nullptr;
 CubeRenderer*		g_cubeRenderer = nullptr;
 #ifdef TEST_RUNNER
 VideoTestRunner*	g_videoTestRunner = nullptr;
-#else // TEST_RUNNER
-BufferRenderer*		g_bufferRenderer = nullptr;
 #endif // TESTRUNNER
 
 #ifndef TEST_RUNNER
+
+
+struct SingleInstanceViewData
+{
+	// dirextx vectors must be 16byte aligned
+	// so we override the operators to support
+	// new-ing this class
+
+	void* operator new(size_t i)
+	{
+		return _mm_malloc(i, 16);
+	}
+
+	void operator delete(void* p)
+	{
+		_mm_free(p);
+	}
+
+	bool IsZeroed()
+	{
+		return DirectX::XMVector3Equal(lookAt, DirectX::XMVectorZero()) &&
+			DirectX::XMVector3Equal(up, DirectX::XMVectorZero()) &&
+			DirectX::XMVector3Equal(eye, DirectX::XMVectorZero());
+	}
+
+	DirectX::XMVECTORF32 lookAt;
+	DirectX::XMVECTORF32 up;
+	DirectX::XMVECTORF32 eye;
+};
+
+struct SingleInstance
+{
+	std::atomic_bool shouldProcessEvents;
+	rtc::scoped_refptr<Conductor> conductor;
+	PeerConnectionClient* client;
+	DirectXBufferCapturer* bufferCapturer;
+	std::shared_ptr<SingleInstanceViewData> mostRecentView;
+};
+
+void CreateSingleInstanceThread(const std::string& instanceName,
+	DeviceResources* deviceResources,
+	MainWindow* wnd,
+	std::vector<std::shared_ptr<SingleInstance>>& instanceList)
+{
+	rtc::Event allocationCompleted(true, false);
+
+	// TODO(bengreenier): are we cool new-ing this into oblivion?
+	new std::thread([&]
+	{
+		rtc::Win32Thread threadWrapper;
+		rtc::ThreadManager::Instance()->SetCurrentThread(&threadWrapper);
+
+		std::shared_ptr<SingleInstanceViewData> mostRecentView(new SingleInstanceViewData());
+
+		InputDataHandler handler([&](const std::string& message)
+		{
+			char type[256];
+			char body[1024];
+			Json::Reader reader;
+			Json::Value msg = NULL;
+			reader.parse(message, msg, false);
+
+			if (msg.isMember("type") && msg.isMember("body"))
+			{
+				strcpy(type, msg.get("type", "").asCString());
+				strcpy(body, msg.get("body", "").asCString());
+				std::istringstream datastream(body);
+				std::string token;
+
+				if (strcmp(type, "camera-transform-lookat") == 0)
+				{
+					// Eye point.
+					getline(datastream, token, ',');
+					float eyeX = stof(token);
+					getline(datastream, token, ',');
+					float eyeY = stof(token);
+					getline(datastream, token, ',');
+					float eyeZ = stof(token);
+
+					// Focus point.
+					getline(datastream, token, ',');
+					float focusX = stof(token);
+					getline(datastream, token, ',');
+					float focusY = stof(token);
+					getline(datastream, token, ',');
+					float focusZ = stof(token);
+
+					// Up vector.
+					getline(datastream, token, ',');
+					float upX = stof(token);
+					getline(datastream, token, ',');
+					float upY = stof(token);
+					getline(datastream, token, ',');
+					float upZ = stof(token);
+
+					const DirectX::XMVECTORF32 lookAt = { focusX, focusY, focusZ, 0.f };
+					const DirectX::XMVECTORF32 up = { upX, upY, upZ, 0.f };
+					const DirectX::XMVECTORF32 eye = { eyeX, eyeY, eyeZ, 0.f };
+
+					mostRecentView->lookAt = lookAt;
+					mostRecentView->up = up;
+					mostRecentView->eye = eye;
+				}
+			}
+		});
+
+		PeerConnectionClient* client = new PeerConnectionClient(instanceName);
+
+		// Note: Conductor is responsible for cleaning up bufferCapturer object.
+		DirectXBufferCapturer* bufferCapturer = new DirectXBufferCapturer(
+			deviceResources->GetD3DDevice());
+
+		bufferCapturer->Initialize();
+
+		auto webrtcConfig = GlobalObject<WebRTCConfig>::Get();
+
+		rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(
+			client, bufferCapturer, wnd, webrtcConfig.get()));
+
+		conductor->SetInputDataHandler(&handler);
+		client->SetHeartbeatMs(webrtcConfig->heartbeat);
+
+		std::shared_ptr<SingleInstance> instance(new SingleInstance());
+		
+		instance->shouldProcessEvents.store(true);
+		instance->conductor = conductor;
+		instance->client = client;
+		instance->bufferCapturer = bufferCapturer;
+		instance->mostRecentView = mostRecentView;
+
+		instanceList.push_back(instance);
+
+		// inform the parent thread that allocation is complete
+		allocationCompleted.Set();
+
+		// process until stopped
+		while (instance->shouldProcessEvents.load())
+		{
+			threadWrapper.ProcessMessages(500);
+		}
+	});
+
+	// wait until allocation of this thread is complete before returning
+	allocationCompleted.Wait(rtc::Event::kForever);
+}
 
 bool AppMain(BOOL stopping)
 {
@@ -67,6 +212,10 @@ bool AppMain(BOOL stopping)
 	authInfo.resource = webrtcConfig->authentication.resource;
 	authInfo.clientId = webrtcConfig->authentication.client_id;
 	authInfo.clientSecret = webrtcConfig->authentication.client_secret;
+
+	rtc::EnsureWinsockInit();
+	rtc::Win32Thread w32_thread;
+	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
 
 	ServerMainWindow wnd(
 		webrtcConfig->server.c_str(),
@@ -90,409 +239,127 @@ bool AppMain(BOOL stopping)
 	// Initializes the cube renderer.
 	g_cubeRenderer = new CubeRenderer(g_deviceResources);
 
-	// Render loop.
-	std::function<void()> frameRenderFunc = ([&]
-	{
-		g_cubeRenderer->Update();
+	rtc::InitializeSSL();
 
-		// For system service, we render to buffer instead of swap chain.
-		if (serverConfig->server_config.system_service)
-		{
-			g_cubeRenderer->Render(g_bufferRenderer->GetRenderTargetView());
-		}
-		else
-		{
-			g_cubeRenderer->Render();
-		}
-	});
-
-	ID3D11Texture2D* frameBuffer = nullptr;
+	// Gets the frame buffer from the swap chain.
+	ComPtr<ID3D11Texture2D> frameBuffer;
 	if (!serverConfig->server_config.system_service)
 	{
-		// Gets the frame buffer from the swap chain.
 		HRESULT hr = g_deviceResources->GetSwapChain()->GetBuffer(
 			0,
 			__uuidof(ID3D11Texture2D),
-			reinterpret_cast<void**>(&frameBuffer));
+			reinterpret_cast<void**>(frameBuffer.GetAddressOf()));
 	}
 
-	// Initializes the buffer renderer.
-	g_bufferRenderer = new BufferRenderer(
-		serverConfig->server_config.width,
-		serverConfig->server_config.height,
-		g_deviceResources->GetD3DDevice(),
-		frameRenderFunc,
-		frameBuffer);
+	std::vector<std::shared_ptr<SingleInstance>> instances;
 
-	// Makes sure to release the frame buffer reference.
-	SAFE_RELEASE(frameBuffer);
-
-
-	rtc::EnsureWinsockInit();
-
-	rtc::InitializeSSL();
-
-	std::shared_ptr<ServerAuthenticationProvider> authProvider;
-	std::shared_ptr<TurnCredentialProvider> turnProvider;
-
-	std::vector<std::thread*> threads;
-	volatile bool stopThreads = false;
-
-	// Handles input from client.
-	InputDataHandler inputHandler([&](const std::string& message)
+	// allocate threads
+	for (auto i = 0; i < 1; ++i)
 	{
-		char type[256];
-		char body[1024];
-		Json::Reader reader;
-		Json::Value msg = NULL;
-		reader.parse(message, msg, false);
-
-		if (msg.isMember("type") && msg.isMember("body"))
-		{
-			strcpy(type, msg.get("type", "").asCString());
-			strcpy(body, msg.get("body", "").asCString());
-			std::istringstream datastream(body);
-			std::string token;
-
-			if (strcmp(type, "stereo-rendering") == 0)
-			{
-				getline(datastream, token, ',');
-				bool isStereo = stoi(token) == 1;
-				if (isStereo == g_deviceResources->IsStereo())
-				{
-					return;
-				}
-
-				// Releases the current frame buffer.
-				g_bufferRenderer->Release();
-
-				// Resizes the swap chain.
-				g_deviceResources->SetStereo(isStereo);
-
-				// Updates the new frame buffer.
-				if (!serverConfig->server_config.system_service)
-				{
-					ID3D11Texture2D* frameBuffer = nullptr;
-					HRESULT hr = g_deviceResources->GetSwapChain()->GetBuffer(
-						0,
-						__uuidof(ID3D11Texture2D),
-						reinterpret_cast<void**>(&frameBuffer));
-
-					g_bufferRenderer->Resize(frameBuffer);
-
-					// Makes sure to release the frame buffer reference.
-					SAFE_RELEASE(frameBuffer);
-				}
-				else
-				{
-					SIZE size = g_deviceResources->GetOutputSize();
-					g_bufferRenderer->Resize(size.cx, size.cy);
-				}
-
-			}
-			else if (strcmp(type, "camera-transform-lookat") == 0)
-			{
-				// Eye point.
-				getline(datastream, token, ',');
-				float eyeX = stof(token);
-				getline(datastream, token, ',');
-				float eyeY = stof(token);
-				getline(datastream, token, ',');
-				float eyeZ = stof(token);
-
-				// Focus point.
-				getline(datastream, token, ',');
-				float focusX = stof(token);
-				getline(datastream, token, ',');
-				float focusY = stof(token);
-				getline(datastream, token, ',');
-				float focusZ = stof(token);
-
-				// Up vector.
-				getline(datastream, token, ',');
-				float upX = stof(token);
-				getline(datastream, token, ',');
-				float upY = stof(token);
-				getline(datastream, token, ',');
-				float upZ = stof(token);
-
-				const DirectX::XMVECTORF32 lookAt = { focusX, focusY, focusZ, 0.f };
-				const DirectX::XMVECTORF32 up = { upX, upY, upZ, 0.f };
-				const DirectX::XMVECTORF32 eye = { eyeX, eyeY, eyeZ, 0.f };
-				g_cubeRenderer->UpdateView(eye, lookAt, up);
-			}
-			else if (strcmp(type, "camera-transform-stereo") == 0)
-			{
-				// Parses the left view projection matrix.
-				DirectX::XMFLOAT4X4 viewProjectionLeft;
-				for (int i = 0; i < 4; i++)
-				{
-					for (int j = 0; j < 4; j++)
-					{
-						getline(datastream, token, ',');
-						viewProjectionLeft.m[i][j] = stof(token);
-					}
-				}
-
-				// Parses the right view projection matrix.
-				DirectX::XMFLOAT4X4 viewProjectionRight;
-				for (int i = 0; i < 4; i++)
-				{
-					for (int j = 0; j < 4; j++)
-					{
-						getline(datastream, token, ',');
-						viewProjectionRight.m[i][j] = stof(token);
-					}
-				}
-
-				// Updates the cube's matrices.
-				g_cubeRenderer->UpdateView(
-					viewProjectionLeft, viewProjectionRight);
-			}
-		}
-	});
-
-	for (auto i = 0; i < 2; ++i)
-	{
-		threads.push_back(new std::thread([&, i]()
-		{
-			rtc::Win32Thread instanceThread;
-			instanceThread.SetName("Instance[" + std::to_string(i) + "]", nullptr);
-
-			rtc::ThreadManager::Instance()->SetCurrentThread(&instanceThread);
-
-			PeerConnectionClient client("[" + std::to_string(i) + "]");
-			rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(
-				&client, &wnd, webrtcConfig.get(), g_bufferRenderer));
-
-			conductor->SetInputDataHandler(&inputHandler);
-			client.SetHeartbeatMs(webrtcConfig->heartbeat);
-
-			while (!stopThreads)
-			{
-				instanceThread.ProcessMessages(500);
-			}
-
-			/*
-			MSG msg;
-			BOOL gm;
-			while (!stopping && (gm = ::GetMessage(&msg, (HWND)-1, 0, 0)) != 0 && gm != -1)
-			{
-				::TranslateMessage(&msg);
-				::DispatchMessage(&msg);
-			}*/
-			
-			// Main loop.
-			//MSG msg;
-			//BOOL gm;
-			//while (!stopping && (gm = ::GetMessage(&msg, (HWND)-1, 0, 0)) != 0 && gm != -1)
-			//{
-			//	// For system service, ignore window and swap chain.
-			//	if (serverConfig->server_config.system_service)
-			//	{
-			//		::TranslateMessage(&msg);
-			//		::DispatchMessage(&msg);
-			//	}
-			//	else
-			//	{
-			//		if (!wnd.PreTranslateMessage(&msg))
-			//		{
-			//			::TranslateMessage(&msg);
-			//			::DispatchMessage(&msg);
-			//		}
-			//	}
-			//}
-		}));
+		// create an instance, adding itself to instances and handles
+		// note: this is blocking until it's been added to the lists
+		CreateSingleInstanceThread(
+			"[" + std::to_string(i) + "]",
+			g_deviceResources,
+			&wnd,
+			instances
+		);
 	}
 
-	/*auto thread = std::make_shared<rtc::Win32Thread>();
+	// reset the current thread in case CSIT changed it
+	// TODO(bengreenier): do we need to do this?
+	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
 
-	rtc::ThreadManager::Instance()->SetCurrentThread(thread.get());
+	// Phong Cao: TODO - Parses from config file.
+	int targetFps = 60;
+	int interval = 1000 / targetFps;
 
-	auto client = std::make_shared<PeerConnectionClient>(std::to_string(i));
-	auto conductor = new rtc::RefCountedObject<Conductor>(
-		client.get(), &wnd, webrtcConfig.get(), g_bufferRenderer);
-
-	conductor->SetInputDataHandler(&inputHandler);
-
-	threads.push_back(thread);
-	clients.push_back(client);
-	conductors.push_back(conductor);*/
-
-	//std::for_each(clients.cbegin(), clients.cend(), [&](std::shared_ptr<PeerConnectionClient> c) { c->SetHeartbeatMs(webrtcConfig->heartbeat); });
-
-	//// configure callbacks (which may or may not be used)
-	//AuthenticationProvider::AuthenticationCompleteCallback authComplete([&](const AuthenticationProviderResult& data)
-	//{
-	//	if (data.successFlag)
-	//	{
-	//		client.SetAuthorizationHeader("Bearer " + data.accessToken);
-
-	//		// indicate to the user auth is complete (only if turn isn't in play)
-	//		if (turnProvider.get() == nullptr)
-	//		{
-	//			wnd.SetAuthCode(L"OK");
-	//		}
-
-	//		// For system service, automatically connect to the signaling server
-	//		// after successful authentication.
-	//		if (serverConfig->server_config.system_service)
-	//		{
-	//			conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
-	//		}
-	//	}
-	//});
-
-	//TurnCredentialProvider::CredentialsRetrievedCallback credentialsRetrieved([&](const TurnCredentials& creds)
-	//{
-	//	if (creds.successFlag)
-	//	{
-	//		conductor->SetTurnCredentials(creds.username, creds.password);
-
-	//		// indicate to the user turn is done
-	//		wnd.SetAuthCode(L"OK");
-	//	}
-	//});
-
-	//// configure auth, if needed
-	//if (!authInfo.authority.empty())
-	//{
-	//	authProvider.reset(new ServerAuthenticationProvider(authInfo));
-
-	//	authProvider->SignalAuthenticationComplete.connect(&authComplete, &AuthenticationProvider::AuthenticationCompleteCallback::Handle);
-	//}
-	//else if (serverConfig->server_config.system_service)
-	//{
-	//	// For system service, automatically connect to the signaling server.
-	//	conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
-	//}
-
-	//// configure turn, if needed
-	//if (!webrtcConfig->turn_server.provider.empty())
-	//{
-	//	turnProvider.reset(new TurnCredentialProvider(webrtcConfig->turn_server.provider));
-	//	turnProvider->SignalCredentialsRetrieved.connect(
-	//		&credentialsRetrieved,
-	//		&TurnCredentialProvider::CredentialsRetrievedCallback::Handle);
-	//}
-
-	//// start auth or turn if needed
-	//if (turnProvider.get() != nullptr)
-	//{
-	//	if (authProvider.get() != nullptr)
-	//	{
-	//		turnProvider->SetAuthenticationProvider(authProvider.get());
-	//	}
-
-	//	// under the hood, this will trigger authProvider->Authenticate() if it exists
-	//	turnProvider->RequestCredentials();
-	//}
-	//else if (authProvider.get() != nullptr)
-	//{
-	//	authProvider->Authenticate();
-	//}
-
-	//// let the user know what we're doing
-	//if (turnProvider.get() != nullptr || authProvider.get() != nullptr)
-	//{
-	//	if (authProvider.get() != nullptr)
-	//	{
-	//		wnd.SetAuthUri(std::wstring(authInfo.authority.begin(), authInfo.authority.end()));
-	//	}
-
-	//	wnd.SetAuthCode(L"Loading");
-	//}
-	//else
-	//{
-	//	wnd.SetAuthCode(L"Not configured");
-	//	wnd.SetAuthUri(L"Not configured");
-	//}
-
-	//// For system service, automatically connect to the signaling server.
-	//if (serverConfig->server_config.system_service)
-	//{
-	//	conductor->StartLogin(webrtcConfig->server, webrtcConfig->port);
-	//}
-
-	/*while (!stopping)
-	{
-		auto mainThread = rtc::Thread::Current();
-
-		for each (auto th in threads)
-		{
-			rtc::ThreadManager::Instance()->SetCurrentThread(th.get());
-			th->ProcessMessages(500);
-		}
-	}*/
-
-	//// Main loop.
-	//MSG msg;
-	//BOOL gm;
-	//while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
-	//{
-	//	// For system service, ignore window and swap chain.
-	//	if (serverConfig->server_config.system_service)
-	//	{
-	//		::TranslateMessage(&msg);
-	//		::DispatchMessage(&msg);
-	//	}
-	//	else
-	//	{
-	//		if (!wnd.PreTranslateMessage(&msg))
-	//		{
-	//			::TranslateMessage(&msg);
-	//			::DispatchMessage(&msg);
-	//		}
-
-	//		if (std::any_of(conductors.cbegin(), conductors.cend(), [](rtc::scoped_refptr<Conductor> c) { return c->connection_active(); }) ||
-	//			std::any_of(clients.cbegin(), clients.cend(), [&](std::shared_ptr<PeerConnectionClient> c) { return c->is_connected(); }))
-	//		{
-	//			g_deviceResources->Present();
-	//		}
-	//	}
-	//}
-
-	// TODO(bengreenier): is there a race condition here where until the threads above start executing
-	// their processing loop we shouldn't be allowed to do things to the window (like click connect)
-	//
 	// Main loop.
-	MSG msg;
-	BOOL gm;
-	while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
+	while (!stopping)
 	{
+		MSG msg = { 0 };
+
 		// For system service, ignore window and swap chain.
 		if (serverConfig->server_config.system_service)
 		{
-			::TranslateMessage(&msg);
-			::DispatchMessage(&msg);
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
 		}
 		else
 		{
-			if (!wnd.PreTranslateMessage(&msg))
+			if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 			{
-				::TranslateMessage(&msg);
+				if (!wnd.PreTranslateMessage(&msg))
+				{
+					TranslateMessage(&msg);
+					DispatchMessage(&msg);
+				}
+			}
+			else
+			{
+				if (std::any_of(instances.begin(), instances.end(), [](std::shared_ptr<SingleInstance> i)
+				{
+					return i->conductor->is_closing();
+				}))
+				{
+					break;
+				}
 
-				// TODO(bengreenier): the error here occurs bc
-				// we can't dispatch messages to the conductors from this thread
-				// we need a layer (perhaps a lightweight MainWindowCallbackImpl)
-				// that marshalls from this thread to the thread the conductor was ctored on
-				::DispatchMessage(&msg);
+				if (std::any_of(instances.begin(), instances.end(), [](std::shared_ptr<SingleInstance> i)
+				{
+					// TODO(bengreenier): do we need this second condition?
+					return i->conductor->connection_active() || i->client->is_connected();
+				}))
+				{
+					ULONGLONG tick = GetTickCount64();
+					g_cubeRenderer->Update();
+
+					for each (auto instance in instances)
+					{
+						auto mrv = instance->mostRecentView;
+						auto bc = instance->bufferCapturer;
+
+						if (!mrv->IsZeroed())
+						{
+							g_cubeRenderer->UpdateView(mrv->eye, mrv->lookAt, mrv->up);
+						}
+						g_cubeRenderer->Render();
+
+						bc->SendFrame(frameBuffer.Get());
+					}
+
+					// TODO(bengreenier): by doing just a present here, we will always see
+					// on our screen the render from the view of the last instance in the list
+					g_deviceResources->Present();
+
+					// FPS limiter.
+					ULONGLONG timeElapsed = GetTickCount64() - tick;
+					DWORD sleepAmount = 0;
+					if (timeElapsed < interval)
+					{
+						sleepAmount = interval - timeElapsed;
+					}
+
+					Sleep(sleepAmount);
+				}
 			}
 		}
 	}
 
-	stopThreads = true;
-
-	std::for_each(threads.begin(), threads.end(), [](std::thread* th)
+	// shutdown the instances
+	for each (auto instance in instances)
 	{
-		th->join();
-		delete th;
-	});
+		instance->shouldProcessEvents.store(false);
+
+		// TODO(bengreenier): we should add a "wait" here until the instance thread is complete
+
+		instance->conductor->Release();
+		delete instance->client;
+	}
 
 	rtc::CleanupSSL();
 
 	// Cleanup.
-	delete g_bufferRenderer;
 	delete g_cubeRenderer;
 	delete g_deviceResources;
 

@@ -8,8 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef WEBRTC_DEFAULT_DATA_CHANNEL_OBSERVER_H_
-#define WEBRTC_DEFAULT_DATA_CHANNEL_OBSERVER_H_
+#pragma once
 
 #include <functional>
 
@@ -63,5 +62,3 @@ namespace StreamingToolkit
 		std::vector<std::string> messages_;
 	};
 }
-
-#endif // WEBRTC_DEFAULT_DATA_CHANNEL_OBSERVER_H_
