@@ -323,6 +323,7 @@ bool AppMain(BOOL stopping)
 						auto mrv = instance->mostRecentView;
 						auto bc = instance->bufferCapturer;
 
+						// TODO(bengreenier): why does zero-ed crash?
 						if (!mrv->IsZeroed())
 						{
 							g_cubeRenderer->UpdateView(mrv->eye, mrv->lookAt, mrv->up);
