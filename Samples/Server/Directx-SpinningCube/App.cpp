@@ -262,7 +262,7 @@ bool AppMain(BOOL stopping)
 	std::vector<std::shared_ptr<SingleInstance>> instances;
 
 	// allocate threads
-	for (auto i = 0; i < 1; ++i)
+	for (auto i = 0; i < 2; ++i)
 	{
 		// create an instance, adding itself to instances and handles
 		// note: this is blocking until it's been added to the lists
