@@ -136,6 +136,7 @@ bool AppMain(BOOL stopping)
 	std::shared_ptr<TurnCredentialProvider> turnProvider;
 
 	std::vector<std::thread*> threads;
+	volatile bool stopThreads = false;
 
 	// Handles input from client.
 	InputDataHandler inputHandler([&](const std::string& message)
@@ -251,7 +252,7 @@ bool AppMain(BOOL stopping)
 		}
 	});
 
-	for (auto i = 0; i < 1; ++i)
+	for (auto i = 0; i < 2; ++i)
 	{
 		threads.push_back(new std::thread([&, i]()
 		{
@@ -267,7 +268,7 @@ bool AppMain(BOOL stopping)
 			conductor->SetInputDataHandler(&inputHandler);
 			client.SetHeartbeatMs(webrtcConfig->heartbeat);
 
-			while (!stopping)
+			while (!stopThreads)
 			{
 				instanceThread.ProcessMessages(500);
 			}
@@ -479,6 +480,8 @@ bool AppMain(BOOL stopping)
 			}
 		}
 	}
+
+	stopThreads = true;
 
 	std::for_each(threads.begin(), threads.end(), [](std::thread* th)
 	{
