@@ -251,7 +251,7 @@ bool AppMain(BOOL stopping)
 		}
 	});
 
-	for (auto i = 0; i < 4; ++i)
+	for (auto i = 0; i < 1; ++i)
 	{
 		threads.push_back(new std::thread([&, i]()
 		{
@@ -271,6 +271,15 @@ bool AppMain(BOOL stopping)
 			{
 				instanceThread.ProcessMessages(500);
 			}
+
+			/*
+			MSG msg;
+			BOOL gm;
+			while (!stopping && (gm = ::GetMessage(&msg, (HWND)-1, 0, 0)) != 0 && gm != -1)
+			{
+				::TranslateMessage(&msg);
+				::DispatchMessage(&msg);
+			}*/
 			
 			// Main loop.
 			//MSG msg;
@@ -448,7 +457,7 @@ bool AppMain(BOOL stopping)
 	// Main loop.
 	MSG msg;
 	BOOL gm;
-	while (!stopping && (gm = ::GetMessage(&msg, wnd.handle(), 0, 0)) != 0 && gm != -1)
+	while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
 	{
 		// For system service, ignore window and swap chain.
 		if (serverConfig->server_config.system_service)
