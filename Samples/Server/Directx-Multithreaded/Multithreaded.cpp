@@ -456,6 +456,7 @@ bool AppMain(BOOL stopping)
 {
 	auto webrtcConfig = GlobalObject<WebRTCConfig>::Get();
 	auto serverConfig = GlobalObject<ServerConfig>::Get();
+	auto nvEncConfig = GlobalObject<NvEncConfig>::Get();
 
 	ServerAuthenticationProvider::ServerAuthInfo authInfo;
 	authInfo.authority = webrtcConfig->authentication.authority;
@@ -528,6 +529,10 @@ bool AppMain(BOOL stopping)
 		DXUTGetD3D11Device());
 
 	bufferCapturer->Initialize();
+	if (nvEncConfig->use_software_encoding)
+	{
+		bufferCapturer->EnableSoftwareEncoder();
+	}
 
 	// Initializes the conductor.
 	rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(

@@ -164,11 +164,18 @@ void CreateSingleInstanceThread(const std::string& instanceName,
 
 		PeerConnectionClient* client = new PeerConnectionClient(instanceName);
 
+		auto nvEncConfig = GlobalObject<NvEncConfig>::Get();
+
 		// Note: Conductor is responsible for cleaning up bufferCapturer object.
 		DirectXBufferCapturer* bufferCapturer = new DirectXBufferCapturer(
 			deviceResources->GetD3DDevice());
 
 		bufferCapturer->Initialize();
+
+		if (nvEncConfig->use_software_encoding)
+		{
+			bufferCapturer->EnableSoftwareEncoder();
+		}
 
 		auto webrtcConfig = GlobalObject<WebRTCConfig>::Get();
 
@@ -206,6 +213,7 @@ bool AppMain(BOOL stopping)
 {
 	auto webrtcConfig = GlobalObject<WebRTCConfig>::Get();
 	auto serverConfig = GlobalObject<ServerConfig>::Get();
+	auto nvEncConfig = GlobalObject<NvEncConfig>::Get();
 
 	ServerAuthenticationProvider::ServerAuthInfo authInfo;
 	authInfo.authority = webrtcConfig->authentication.authority;
@@ -270,10 +278,6 @@ bool AppMain(BOOL stopping)
 	// TODO(bengreenier): do we need to do this?
 	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
 
-	// Phong Cao: TODO - Parses from config file.
-	int targetFps = 60;
-	int interval = 1000 / targetFps;
-
 	// Main loop.
 	while (!stopping)
 	{
@@ -333,6 +337,7 @@ bool AppMain(BOOL stopping)
 					g_deviceResources->Present();
 
 					// FPS limiter.
+					const int interval = 1000 / nvEncConfig->capture_fps;
 					ULONGLONG timeElapsed = GetTickCount64() - tick;
 					DWORD sleepAmount = 0;
 					if (timeElapsed < interval)

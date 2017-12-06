@@ -67,12 +67,13 @@ namespace StreamingToolkit
 			const rtc::VideoSinkWants& wants) override;
 
 		void RemoveSink(rtc::VideoSinkInterface<VideoFrame>* sink) override;
+		void EnableSoftwareEncoder(bool use_software_encoder = true);
 
 		sigslot::signal1<BufferCapturer*> SignalDestroyed;
 
 	protected:
 		virtual void Initialize() = 0;
-		virtual void SendFrame(webrtc::VideoFrame video_frame) = 0;
+		virtual void SendFrame(webrtc::VideoFrame video_frame);
 
 		Clock* const clock_;
 		bool use_software_encoder_;
