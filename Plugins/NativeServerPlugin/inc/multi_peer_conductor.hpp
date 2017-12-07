@@ -22,8 +22,7 @@ public:
 		bool enableSoftware = false) :
 		m_webrtcConfig(config),
 		m_d3dDevice(d3dDevice),
-		m_enableSoftware(enableSoftware),
-		m_signallingClient("")
+		m_enableSoftware(enableSoftware)
 	{
 		m_signallingClient.RegisterObserver(this);
 		m_peerFactory = webrtc::CreatePeerConnectionFactory();
