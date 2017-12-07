@@ -90,7 +90,7 @@ public:
 		shared_ptr<BufferCapturer> bufferCapturer) :
 		m_webrtcConfig(config),
 		m_bufferCapturer(bufferCapturer),
-		m_signallingClient("")
+		m_signallingClient()
 	{
 		m_signallingClient.RegisterObserver(this);
 		m_peerFactory = webrtc::CreatePeerConnectionFactory();
