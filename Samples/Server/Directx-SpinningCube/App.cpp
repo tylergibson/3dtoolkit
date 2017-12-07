@@ -76,6 +76,26 @@ bool AppMain(BOOL stopping)
 		serverConfig->server_config.width,
 		serverConfig->server_config.height);
 
+	// give us a quick and dirty quit handler
+	struct wndHandler : public MainWindowCallback
+	{
+		virtual void StartLogin(const std::string& server, int port) override {};
+
+		virtual void DisconnectFromServer() override {}
+
+		virtual void ConnectToPeer(int peer_id) override {}
+
+		virtual void DisconnectFromCurrentPeer() override {}
+
+		virtual void UIThreadCallback(int msg_id, void* data) override {}
+
+		atomic_bool isClosing = false;
+		virtual void Close() override { isClosing.store(true); }
+	} wndHandler;
+	
+	// register the handler
+	wnd.RegisterObserver(&wndHandler);
+
 	if (!serverConfig->server_config.system_service && !wnd.Create())
 	{
 		RTC_NOTREACHED();
@@ -111,6 +131,12 @@ bool AppMain(BOOL stopping)
 	// Main loop.
 	while (!stopping)
 	{
+		// if we're quitting, do so
+		if (wndHandler.isClosing)
+		{
+			break;
+		}
+
 		MSG msg = { 0 };
 
 		// For system service, ignore window and swap chain.
@@ -123,12 +149,6 @@ bool AppMain(BOOL stopping)
 		{
 			if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 			{
-				// TODO(bengreenier): this doesn't seem to work
-				if (msg.message == WM_CLOSE)
-				{
-					break;
-				}
-
 				if (!wnd.PreTranslateMessage(&msg))
 				{
 					TranslateMessage(&msg);
