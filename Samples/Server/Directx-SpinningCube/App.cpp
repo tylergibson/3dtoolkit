@@ -62,13 +62,7 @@ bool AppMain(BOOL stopping)
 	auto webrtcConfig = GlobalObject<WebRTCConfig>::Get();
 	auto serverConfig = GlobalObject<ServerConfig>::Get();
 	auto nvEncConfig = GlobalObject<NvEncConfig>::Get();
-
-	ServerAuthenticationProvider::ServerAuthInfo authInfo;
-	authInfo.authority = webrtcConfig->authentication.authority;
-	authInfo.resource = webrtcConfig->authentication.resource;
-	authInfo.clientId = webrtcConfig->authentication.client_id;
-	authInfo.clientSecret = webrtcConfig->authentication.client_secret;
-
+	
 	rtc::EnsureWinsockInit();
 	rtc::Win32Thread w32_thread;
 	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
@@ -107,19 +101,10 @@ bool AppMain(BOOL stopping)
 			reinterpret_cast<void**>(frameBuffer.GetAddressOf()));
 	}
 
-	// Creates and initializes the buffer capturer.
-	// Note: Conductor is responsible for cleaning up bufferCapturer object.
-	shared_ptr<DirectXBufferCapturer> bufferCapturer(new DirectXBufferCapturer(
-		g_deviceResources->GetD3DDevice()));
-
-	bufferCapturer->Initialize();
-	if (nvEncConfig->use_software_encoding)
-	{
-		bufferCapturer->EnableSoftwareEncoder();
-	}
-
 	// Initializes the conductor.
-	MultiPeerConductor cond(webrtcConfig, bufferCapturer);
+	MultiPeerConductor cond(webrtcConfig,
+		g_deviceResources->GetD3DDevice(),
+		nvEncConfig->use_software_encoding);
 
 	cond.ConnectSignallingAsync("renderingserver_test");
 
@@ -138,6 +123,7 @@ bool AppMain(BOOL stopping)
 		{
 			if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 			{
+				// TODO(bengreenier): this doesn't seem to work
 				if (msg.message == WM_CLOSE)
 				{
 					break;
@@ -153,8 +139,24 @@ bool AppMain(BOOL stopping)
 			{
 				ULONGLONG tick = GetTickCount64();
 				g_cubeRenderer->Update();
-				g_cubeRenderer->Render();
-				bufferCapturer->SendFrame(frameBuffer.Get());
+
+				for each (auto pair in cond.Peers())
+				{
+					auto peer = pair.second;
+					auto peerView = peer->View();
+
+					if (peerView->IsValid())
+					{
+						g_cubeRenderer->UpdateView(peerView->eye, peerView->lookAt, peerView->up);
+					}
+
+					g_cubeRenderer->Render();
+
+					// this works because peer is a DirectXPeerConductor
+					peer->SendFrame(frameBuffer.Get());
+				}
+
+				// TODO(bengreenier): this will only show the last viewport via the server window (is that cool)
 				g_deviceResources->Present();
 
 				// FPS limiter.
