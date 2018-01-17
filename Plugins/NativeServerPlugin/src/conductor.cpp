@@ -14,6 +14,9 @@
 #include <utility>
 #include <vector>
 #include <fstream>
+#include <d3d11_4.h>
+#include <wrl\client.h>
+#include <wrl\wrappers\corewrappers.h>
 
 #include "conductor.h"
 #include "defaults.h"
@@ -23,7 +26,12 @@
 #include "webrtc/base/logging.h"
 #include "webrtc/media/engine/webrtcvideocapturerfactory.h"
 #include "webrtc/modules/video_capture/video_capture_factory.h"
-#include "custom_video_capturer.h"
+
+#include "plugindefs.h"
+#include "buffer_capturer.h"
+
+using namespace StreamingToolkit;
+using namespace Microsoft::WRL;
 
 // Names used for a IceCandidate JSON object.
 const char kCandidateSdpMidName[] = "sdpMid";
@@ -63,26 +71,27 @@ protected:
 	~DummySetSessionDescriptionObserver() {}
 };
 
-using namespace StreamingToolkit;
-
 Conductor::Conductor(
 	PeerConnectionClient* client,
+	BufferCapturer* buffer_capturer,
 	MainWindow* main_window,
 	WebRTCConfig* webrtc_config,
-	BufferRenderer* buffer_renderer,
 	PeerConnectionObserver* connection_observer) :
 		peer_id_(-1),
 		loopback_(false),
+		is_closing_(false),
 		client_(client),
+		buffer_capturer_(buffer_capturer),
 		main_window_(main_window),
 		webrtc_config_(webrtc_config),
-		buffer_renderer_(buffer_renderer),
 		input_data_handler_(nullptr)
 {
 	client_->RegisterObserver(this);
+
 	if (main_window_->IsWindow())
 	{
-		main_window->RegisterObserver(this);
+		thread_callback_ = new ThreadSafeMainWindowCallback(this);
+		main_window->RegisterObserver(thread_callback_);
 	}
 
 	if (connection_observer != nullptr)
@@ -104,11 +113,19 @@ Conductor::~Conductor()
 
 	// cleanup the observer
 	delete client_observer_;
+
+	// cleanup the thread callback
+	delete thread_callback_;
 }
 
 bool Conductor::connection_active() const
 {
 	return peer_connection_.get() != NULL;
+}
+
+bool Conductor::is_closing() const
+{
+	return is_closing_;
 }
 
 void Conductor::SetTurnCredentials(const std::string& username, const std::string& password)
@@ -124,6 +141,7 @@ void Conductor::SetInputDataHandler(InputDataHandler* handler)
 
 void Conductor::Close() 
 {
+	is_closing_ = true;
 	client_->SignOut();
 	client_->Shutdown();
 
@@ -622,15 +640,7 @@ void Conductor::ConnectToPeer(int peer_id)
 
 std::unique_ptr<cricket::VideoCapturer> Conductor::OpenVideoCaptureDevice()
 {
-	VideoCapturerFactoryCustom factory;
-	std::unique_ptr<cricket::VideoCapturer> capturer;
-	cricket::Device dummyDevice;
-	dummyDevice.name = "custom dummy device";
-	capturer = factory.Create(
-		webrtc::Clock::GetRealTimeClock(),
-		dummyDevice,
-		buffer_renderer_);
-
+	std::unique_ptr<cricket::VideoCapturer> capturer(buffer_capturer_);
 	return capturer;
 }
 
@@ -774,14 +784,14 @@ void Conductor::OnFailure(const std::string& error)
 void Conductor::SendMessage(const std::string& json_object)
 {
 	std::string* msg = new std::string(json_object);
-	if (main_window_->IsWindow())
+	/*if (main_window_->IsWindow())
 	{
 		main_window_->QueueUIThreadCallback(SEND_MESSAGE_TO_PEER, msg);
 	}
 	else
-	{
+	{*/
 		SendMessageToPeer(msg);
-	}
+	//}
 }
 
 void Conductor::NewStreamAdded(webrtc::MediaStreamInterface* stream)

@@ -37,6 +37,7 @@
 #include "server_renderer.h"
 #include "webrtc.h"
 #include "config_parser.h"
+#include "directx_buffer_capturer.h"
 #include "service/render_service.h"
 #endif // TEST_RUNNER
 
@@ -392,10 +393,7 @@ SceneParamsStatic           g_StaticParamsMirror[g_iNumMirrors];
 //--------------------------------------------------------------------------------------
 #ifdef TEST_RUNNER
 VideoTestRunner*			g_videoTestRunner = nullptr;
-#else
-BufferRenderer*				g_bufferRenderer = nullptr;
 #endif // TEST_RUNNER
-
 
 //--------------------------------------------------------------------------------------
 // Forward declarations 
@@ -458,6 +456,7 @@ bool AppMain(BOOL stopping)
 {
 	auto webrtcConfig = GlobalObject<WebRTCConfig>::Get();
 	auto serverConfig = GlobalObject<ServerConfig>::Get();
+	auto nvEncConfig = GlobalObject<NvEncConfig>::Get();
 
 	ServerAuthenticationProvider::ServerAuthInfo authInfo;
 	authInfo.authority = webrtcConfig->authentication.authority;
@@ -495,6 +494,7 @@ bool AppMain(BOOL stopping)
 		DXUTSetHeadlessMode(true);
 	}
 
+	// Creates device.
 	DXUTCreateDevice(
 		D3D_FEATURE_LEVEL_11_0,
 		true,
@@ -507,46 +507,36 @@ bool AppMain(BOOL stopping)
 	// Initializes viewport for left and right cameras.
 	g_CameraResources.SetViewport(serverConfig->server_config.width, serverConfig->server_config.height);
 
-	// Render loop.
-	std::function<void()> frameRenderFunc = ([&]
-	{
-		DXUTRender3DEnvironment();
-	});
-
-	ID3D11Texture2D* frameBuffer = nullptr;
-	if (!serverConfig->server_config.system_service)
-	{
-		// Gets the frame buffer from the swap chain.
-		HRESULT hr = DXUTGetDXGISwapChain()->GetBuffer(
-			0,
-			__uuidof(ID3D11Texture2D),
-			reinterpret_cast<void**>(&frameBuffer));
-	}
-
-	// Initializes the buffer renderer.
-	g_bufferRenderer = new BufferRenderer(
-		serverConfig->server_config.width,
-		serverConfig->server_config.height,
-		DXUTGetD3D11Device(),
-		frameRenderFunc,
-		frameBuffer);
-
-	// Makes sure to release the frame buffer reference.
-	SAFE_RELEASE(frameBuffer);
-
-	// For system service, we render to buffer instead of swap chain.
-	if (serverConfig->server_config.system_service)
-	{
-		DXUTSetD3D11RenderTargetView(g_bufferRenderer->GetRenderTargetView());
-	}
-
 	rtc::InitializeSSL();
 
 	std::shared_ptr<ServerAuthenticationProvider> authProvider;
 	std::shared_ptr<TurnCredentialProvider> turnProvider;
 	PeerConnectionClient client;
+
+	// Gets the frame buffer from the swap chain.
+	ComPtr<ID3D11Texture2D> frameBuffer;
+	if (!serverConfig->server_config.system_service)
+	{
+		HRESULT hr = DXUTGetDXGISwapChain()->GetBuffer(
+			0,
+			__uuidof(ID3D11Texture2D),
+			reinterpret_cast<void**>(frameBuffer.GetAddressOf()));
+	}
+
+	// Creates and initializes the buffer capturer.
+	// Note: Conductor is responsible for cleaning up bufferCapturer object.
+	DirectXBufferCapturer* bufferCapturer = new DirectXBufferCapturer(
+		DXUTGetD3D11Device());
+
+	bufferCapturer->Initialize();
+	if (nvEncConfig->use_software_encoding)
+	{
+		bufferCapturer->EnableSoftwareEncoder();
+	}
+
+	// Initializes the conductor.
 	rtc::scoped_refptr<Conductor> conductor(new rtc::RefCountedObject<Conductor>(
-		&client, &wnd, webrtcConfig.get(), g_bufferRenderer));
+		&client, bufferCapturer, &wnd, webrtcConfig.get()));
 
 	// Handles input from client.
 	InputDataHandler inputHandler([&](const std::string& message)
@@ -565,41 +555,7 @@ bool AppMain(BOOL stopping)
 			std::string token;
 			if (strcmp(type, "stereo-rendering") == 0)
 			{
-				getline(datastream, token, ',');
-				bool isStereo = stoi(token) == 1;
-				if (isStereo == g_CameraResources.IsStereo())
-				{
-					return;
-				}
-
-				g_bufferRenderer->Release();
-				g_CameraResources.SetStereo(isStereo);
-				DXUTDeviceSettings deviceSettings = DXUTGetDeviceSettings();
-				int width = deviceSettings.d3d11.sd.BufferDesc.Width;
-				int height = deviceSettings.d3d11.sd.BufferDesc.Height;
-				int newWidth = isStereo ? width << 1 : width >> 1;
-				DXUTResizeDXGIBuffers(newWidth, height, false);
-				if (!serverConfig->server_config.system_service)
-				{
-					ID3D11Texture2D* frameBuffer = nullptr;
-					SetWindowPos(DXUTGetHWNDDeviceWindowed(), 0, 0, 0, newWidth, height, SWP_NOZORDER | SWP_NOMOVE);
-
-					// Gets the frame buffer from the swap chain.
-					HRESULT hr = DXUTGetDXGISwapChain()->GetBuffer(
-						0,
-						__uuidof(ID3D11Texture2D),
-						reinterpret_cast<void**>(&frameBuffer));
-
-					g_bufferRenderer->Resize(frameBuffer);
-
-					// Makes sure to release the frame buffer reference.
-					SAFE_RELEASE(frameBuffer);
-				}
-				else
-				{
-					g_bufferRenderer->Resize(newWidth, height);
-					DXUTSetD3D11RenderTargetView(g_bufferRenderer->GetRenderTargetView());
-				}
+				// Phong Cao: TODO
 			}
 			else if (strcmp(type, "camera-transform-lookat") == 0)
 			{
@@ -758,27 +714,43 @@ bool AppMain(BOOL stopping)
 	}
 
 	// Main loop.
-	MSG msg;
-	BOOL gm;
-	while (!stopping && (gm = ::GetMessage(&msg, NULL, 0, 0)) != 0 && gm != -1)
+	while (!stopping)
 	{
+		MSG msg = { 0 };
+
 		// For system service, ignore window and swap chain.
 		if (serverConfig->server_config.system_service)
 		{
-			::TranslateMessage(&msg);
-			::DispatchMessage(&msg);
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
 		}
-		else if (!wnd.PreTranslateMessage(&msg))
+		else
 		{
-			::TranslateMessage(&msg);
-			::DispatchMessage(&msg);
+			if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+			{
+				if (!wnd.PreTranslateMessage(&msg))
+				{
+					TranslateMessage(&msg);
+					DispatchMessage(&msg);
+				}
+			}
+			else
+			{
+				if (conductor->is_closing())
+				{
+					break;
+				}
+
+				if (conductor->connection_active() || client.is_connected())
+				{
+					DXUTRender3DEnvironment();
+					bufferCapturer->SendFrame(frameBuffer.Get());
+				}
+			}
 		}
 	}
 
 	rtc::CleanupSSL();
-
-	// Cleanup.
-	delete g_bufferRenderer;
 
 	return 0;
 }
@@ -848,7 +820,11 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 	DXUTSetCallbackD3D11DeviceDestroyed(OnD3D11DestroyDevice);
 
 	InitApp();
-	DXUTInit(true, true, lpCmdLine); // Parse the command line, show msgboxes on error, no extra command line params
+
+	// Enables VSync by default.
+	WCHAR cmdLine[1024];
+	wsprintf(cmdLine, L"%ls -forcevsync:1", lpCmdLine);
+	DXUTInit(true, true, cmdLine); // Parse the command line, show msgboxes on error, no extra command line params
 
 #ifdef TEST_RUNNER
 	DXUTSetCursorSettings(true, true); // Show the cursor and clip it when in full screen

@@ -209,7 +209,7 @@ void DeviceResources::SetWindow(HWND hWnd)
 // Presents the contents of the swap chain to the screen.
 void DeviceResources::Present()
 {
-	m_swapChain->Present(1, 0);
+	m_swapChain->Present(0, 0);
 }
 
 // Resizes the swapchain.
